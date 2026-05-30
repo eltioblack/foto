@@ -90,6 +90,18 @@
 
   .stage{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#000;min-height:200px;display:grid;place-items:center}
   .stage canvas{max-width:100%;height:auto;display:block}
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:4px}
+  .gcard{position:relative;border-radius:12px;overflow:hidden;border:2px solid var(--line);background:#fff;cursor:pointer;aspect-ratio:1;transition:.15s}
+  .gcard img{width:100%;height:100%;object-fit:contain;display:block}
+  .gcard.sel{border-color:var(--alien);box-shadow:0 0 0 2px var(--alien)}
+  .gcard .tick{position:absolute;top:6px;right:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.5);border:1.5px solid #fff;display:grid;place-items:center;color:#fff;font-size:13px;font-weight:700}
+  .gcard.sel .tick{background:var(--alien);border-color:var(--alien);color:#000}
+  .gcard .gerr{position:absolute;inset:0;display:grid;place-items:center;background:rgba(40,0,0,.85);color:#ff8a8a;font-family:"Space Mono";font-size:10px;text-align:center;padding:8px}
+  .gcard .gnum{position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,.6);color:#fff;font-family:"Space Mono";font-size:9px;padding:2px 6px;border-radius:6px}
+  .galbar{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .chip{background:#000;border:1px solid var(--line);color:var(--ink);font-family:"Barlow Condensed",sans-serif;font-weight:600;font-size:13px;padding:7px 12px;border-radius:8px;cursor:pointer;letter-spacing:.5px}
+  .chip:hover{border-color:var(--yellow);color:var(--yellow)}
+  .galcount{font-family:"Space Mono";font-size:11px;color:var(--alien);margin-left:auto}
   .empty{font-family:"Space Mono";font-size:12px;color:var(--muted);padding:50px 20px;text-align:center;line-height:1.7}
   .empty b{color:var(--yellow)}
 
@@ -118,7 +130,7 @@
       <p>Catálogo automático · piezas BMX</p>
     </div>
     <div style="margin-left:auto;text-align:right;flex:0 0 auto">
-      <div style="font-family:'Bebas Neue';font-size:30px;color:var(--alien);line-height:1">v17</div>
+      <div style="font-family:'Bebas Neue';font-size:30px;color:var(--alien);line-height:1">v18</div>
       <div style="font-family:'Space Mono';font-size:9px;color:var(--muted);letter-spacing:1px">29 MAY · single</div>
     </div>
   </header>
@@ -246,12 +258,20 @@
 
   <!-- RESULTADO -->
   <div class="card">
-    <div class="lab"><b>04</b> Resultado</div>
+    <div class="lab"><b>04</b> Resultados</div>
     <div class="stage" id="stage">
-      <div class="empty">El resultado aparecerá aquí en<br><b>fondo blanco puro</b> con tu marca de agua.</div>
+      <div class="empty">Los resultados aparecerán aquí en<br><b>fondo blanco puro</b> con tu marca de agua.</div>
     </div>
-    <button class="ghost" id="dl" disabled style="margin-top:14px">⬇ Descargar PNG en alta calidad</button>
-    <button class="ghost" id="batch" disabled>Procesar TODAS las fotos cargadas</button>
+    <div id="gallery" class="gallery" style="display:none"></div>
+    <div id="galCtrls" style="display:none">
+      <div class="galbar">
+        <button class="chip" id="selAll">Seleccionar todo</button>
+        <button class="chip" id="selNone">Ninguno</button>
+        <span class="galcount" id="galCount">0 seleccionadas</span>
+      </div>
+      <button class="go" id="dlSel" style="margin-top:12px">⬇ Descargar selección (.zip)</button>
+    </div>
+    <button class="ghost" id="batch" disabled style="margin-top:14px">⚡ Procesar TODAS en paralelo</button>
   </div>
 
   <footer>Black Wings BMX · prototipo · procesado 100% en tu dispositivo</footer>
@@ -326,7 +346,7 @@ bind('tol','vTol', v=> v<38?'bajo':v<62?'medio':'alto');
 function loadImage(src){ return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>res(i);i.onerror=rej;i.src=src;}); }
 function setStatus(t,err=false){ const s=$('status'); s.textContent=t; s.classList.toggle('err',err); }
 function setProg(p){ $('prog').style.width=(p*100)+'%'; }
-function refreshButtons(){ const ok=state.active>=0; $('go').disabled=!ok; $('batch').disabled=!ok||state.photos.length<2; }
+function refreshButtons(){ const ok=state.active>=0; $('go').disabled=!ok; $('batch').disabled=!ok||state.photos.length<1; }
 
 /* recorta bordes transparentes y devuelve {canvas, bbox} */
 function trim(srcCanvas){
@@ -822,44 +842,151 @@ async function process(file){
   return out;
 }
 
-function showResult(canvas){
-  state.lastCanvas=canvas;
-  const stage=$('stage'); stage.innerHTML=''; stage.appendChild(canvas);
-  $('dl').disabled=false;
+/* ---------- resultados: galería + selección ---------- */
+const results = [];   // { canvas, blob, selected, error, name }
+
+function renderGallery(){
+  const g=$('gallery'), ctr=$('galCtrls'), stage=$('stage');
+  if(results.length===0){ g.style.display='none'; ctr.style.display='none'; return; }
+  stage.style.display='none'; g.style.display='grid'; ctr.style.display='block';
+  g.innerHTML='';
+  results.forEach((r,i)=>{
+    const card=document.createElement('div');
+    card.className='gcard'+(r.selected?' sel':'')+(r.error?' err':'');
+    if(r.error){
+      card.innerHTML='<div class="gerr">Error<br>'+(r.error)+'</div><div class="gnum">#'+(i+1)+'</div>';
+    } else {
+      const img=document.createElement('img'); img.src=r.url; card.appendChild(img);
+      const tick=document.createElement('div'); tick.className='tick'; tick.textContent=r.selected?'✓':''; card.appendChild(tick);
+      const num=document.createElement('div'); num.className='gnum'; num.textContent='#'+(i+1); card.appendChild(num);
+      card.onclick=()=>{ r.selected=!r.selected; renderGallery(); };
+    }
+    g.appendChild(card);
+  });
+  const sel=results.filter(r=>r.selected&&!r.error).length;
+  $('galCount').textContent=sel+' seleccionada'+(sel===1?'':'s');
+  $('dlSel').disabled = sel===0;
+  $('dlSel').style.opacity = sel===0?'.4':'1';
 }
 
+function addResult(canvas, error){
+  const r={canvas, error:error||null, selected:!error, url:null, name:'blackwings_'+String(results.length+1).padStart(2,'0')+'.png'};
+  if(canvas && !error){ r.url=canvas.toDataURL('image/png'); }
+  results.push(r);
+  renderGallery();
+  return r;
+}
+
+/* ---------- procesar 1 (botón principal) ---------- */
 $('go').onclick = async () => {
   if(state.active<0) return;
   $('go').disabled=true;
-  try{ showResult(await process(state.photos[state.active])); }
-  catch(e){ console.error(e); }
+  results.length=0;
+  try{
+    const c=await process(state.photos[state.active]);
+    addResult(c);
+  }catch(e){ console.error(e); addResult(null, (e&&e.message)||'falló'); }
   finally{ $('go').disabled=false; refreshButtons(); }
 };
 
-$('dl').onclick = () => {
-  if(!state.lastCanvas) return;
-  state.lastCanvas.toBlob(b=>{
-    const a=document.createElement('a'); a.href=URL.createObjectURL(b);
-    a.download='blackwings_'+Date.now()+'.png'; a.click();
-  },'image/png',1.0);
+/* ---------- POOL de concurrencia: procesa N en paralelo ---------- */
+async function runPool(items, worker, concurrency){
+  let idx=0, done=0;
+  const total=items.length;
+  async function next(){
+    const i=idx++;
+    if(i>=total) return;
+    try{ await worker(items[i], i); }
+    catch(e){ console.error('item',i,e); }
+    done++;
+    setStatus(`Procesando ${done}/${total}…`);
+    return next();
+  }
+  const runners=[];
+  for(let k=0;k<Math.min(concurrency,total);k++) runners.push(next());
+  await Promise.all(runners);
+}
+
+/* reintento con backoff si remove.bg devuelve 429 */
+async function processWithRetry(file, tries){
+  tries=tries||3;
+  for(let t=0;t<tries;t++){
+    try{ return await process(file); }
+    catch(e){
+      const msg=(e&&e.message)||'';
+      if(msg.includes('429') && t<tries-1){
+        await new Promise(r=>setTimeout(r, 1500*(t+1)));   // espera y reintenta
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+/* ---------- procesar TODAS en paralelo ---------- */
+$('batch').onclick = async () => {
+  if(state.photos.length===0) return;
+  $('batch').disabled=true; $('go').disabled=true;
+  results.length=0; renderGallery();
+  // preasignar tarjetas en orden para que la galería se llene en vivo
+  const slots = state.photos.map(()=>null);
+  const CONC = (typeof CUT!=='undefined' && CUT==='cloud') ? 5 : 2;   // nube: 5 en paralelo; IA local pesa más: 2
+  setStatus(`Procesando ${state.photos.length} en paralelo (${CONC} a la vez)…`);
+  // resultados en orden: usamos un array y rellenamos por índice
+  const ordered = new Array(state.photos.length).fill(null);
+  await runPool(state.photos, async (file, i) => {
+    try{
+      const c = await processWithRetry(file, 3);
+      ordered[i] = { canvas:c, error:null };
+    }catch(e){
+      ordered[i] = { canvas:null, error:(e&&e.message)||'falló' };
+    }
+    // re-render incremental respetando el orden
+    results.length=0;
+    ordered.forEach((o)=>{ if(o) addResultSilent(o.canvas, o.error); });
+    renderGallery();
+  }, CONC);
+  const ok=results.filter(r=>!r.error).length, fail=results.length-ok;
+  setStatus(`✔ Listo: ${ok} correctas`+(fail?`, ${fail} con error`:'')+'. Toca para elegir y descarga el .zip.');
+  $('go').disabled=false; refreshButtons();
 };
 
-$('batch').onclick = async () => {
-  $('batch').disabled=true; $('go').disabled=true;
-  const zip=new JSZip();
-  for(let i=0;i<state.photos.length;i++){
-    setStatus(`Procesando ${i+1} de ${state.photos.length}…`);
-    try{
-      const c=await process(state.photos[i]);
-      const blob=await new Promise(r=>c.toBlob(r,'image/png',1.0));
-      zip.file('blackwings_'+String(i+1).padStart(2,'0')+'.png', blob);
-    }catch(e){ console.error(e); }
+/* versión silenciosa de addResult (sin re-render por cada una; se renderiza al final) */
+function addResultSilent(canvas, error){
+  const r={canvas, error:error||null, selected:!error, url:null, name:'blackwings_'+String(results.length+1).padStart(2,'0')+'.png'};
+  if(canvas && !error){ r.url=canvas.toDataURL('image/png'); }
+  results.push(r);
+}
+
+/* ---------- selección ---------- */
+$('selAll').onclick = ()=>{ results.forEach(r=>{ if(!r.error) r.selected=true; }); renderGallery(); };
+$('selNone').onclick = ()=>{ results.forEach(r=>r.selected=false); renderGallery(); };
+
+/* ---------- descargar selección en ZIP ---------- */
+$('dlSel').onclick = async () => {
+  const sel=results.filter(r=>r.selected && !r.error && r.canvas);
+  if(sel.length===0) return;
+  $('dlSel').disabled=true;
+  if(sel.length===1){
+    // una sola: descarga PNG directo (más cómodo que un zip de 1)
+    setStatus('Descargando imagen…');
+    sel[0].canvas.toBlob(b=>{
+      const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=sel[0].name; a.click();
+      setStatus('✔ Imagen descargada.'); $('dlSel').disabled=false;
+    },'image/png',1.0);
+    return;
   }
-  setStatus('Comprimiendo .zip…');
+  setStatus(`Comprimiendo ${sel.length} imágenes…`);
+  const zip=new JSZip();
+  for(let i=0;i<sel.length;i++){
+    const blob=await new Promise(r=>sel[i].canvas.toBlob(r,'image/png',1.0));
+    zip.file('blackwings_'+String(i+1).padStart(2,'0')+'.png', blob);
+  }
   const out=await zip.generateAsync({type:'blob'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(out); a.download='black-wings-catalogo.zip'; a.click();
-  setStatus('✔ Lote completo (.zip descargado).'); $('go').disabled=false; refreshButtons();
+  setStatus(`✔ ${sel.length} imágenes descargadas en .zip.`); $('dlSel').disabled=false;
 };
+
 
 /* registro del Service Worker (PWA instalable / offline shell) */
 if ('serviceWorker' in navigator) {
