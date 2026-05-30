@@ -130,7 +130,7 @@
       <p>Catálogo automático · piezas BMX</p>
     </div>
     <div style="margin-left:auto;text-align:right;flex:0 0 auto">
-      <div style="font-family:'Bebas Neue';font-size:30px;color:var(--alien);line-height:1">v18</div>
+      <div style="font-family:'Bebas Neue';font-size:30px;color:var(--alien);line-height:1">v19</div>
       <div style="font-family:'Space Mono';font-size:9px;color:var(--muted);letter-spacing:1px">29 MAY · single</div>
     </div>
   </header>
@@ -271,7 +271,7 @@
       </div>
       <button class="go" id="dlSel" style="margin-top:12px">⬇ Descargar selección (.zip)</button>
     </div>
-    <button class="ghost" id="batch" disabled style="margin-top:14px">⚡ Procesar TODAS en paralelo</button>
+    <button class="ghost" id="batch" disabled style="margin-top:14px">⚡ Procesar TODAS (una por una)</button>
   </div>
 
   <footer>Black Wings BMX · prototipo · procesado 100% en tu dispositivo</footer>
@@ -909,13 +909,15 @@ async function runPool(items, worker, concurrency){
 
 /* reintento con backoff si remove.bg devuelve 429 */
 async function processWithRetry(file, tries){
-  tries=tries||3;
+  tries=tries||4;
   for(let t=0;t<tries;t++){
     try{ return await process(file); }
     catch(e){
       const msg=(e&&e.message)||'';
       if(msg.includes('429') && t<tries-1){
-        await new Promise(r=>setTimeout(r, 1500*(t+1)));   // espera y reintenta
+        // 429 = límite de la API: espera creciente (2s, 4s, 6s…) y reintenta
+        setStatus('Límite de la API alcanzado, esperando para reintentar…');
+        await new Promise(r=>setTimeout(r, 2000*(t+1)));
         continue;
       }
       throw e;
@@ -923,29 +925,32 @@ async function processWithRetry(file, tries){
   }
 }
 
-/* ---------- procesar TODAS en paralelo ---------- */
+/* ---------- procesar TODAS, una por una (secuencial, estable, sin 429) ---------- */
 $('batch').onclick = async () => {
   if(state.photos.length===0) return;
   $('batch').disabled=true; $('go').disabled=true;
   results.length=0; renderGallery();
-  // preasignar tarjetas en orden para que la galería se llene en vivo
-  const slots = state.photos.map(()=>null);
-  const CONC = (typeof CUT!=='undefined' && CUT==='cloud') ? 5 : 2;   // nube: 5 en paralelo; IA local pesa más: 2
-  setStatus(`Procesando ${state.photos.length} en paralelo (${CONC} a la vez)…`);
-  // resultados en orden: usamos un array y rellenamos por índice
-  const ordered = new Array(state.photos.length).fill(null);
-  await runPool(state.photos, async (file, i) => {
+  const total=state.photos.length;
+  const ordered = new Array(total).fill(null);
+  // pausa entre imágenes para no gatillar el límite de la API (solo en modo nube)
+  const GAP = (typeof CUT!=='undefined' && CUT==='cloud') ? 700 : 0;
+
+  for(let i=0;i<total;i++){
+    setStatus(`Procesando ${i+1} de ${total}…`);
     try{
-      const c = await processWithRetry(file, 3);
+      const c = await processWithRetry(state.photos[i], 4);
       ordered[i] = { canvas:c, error:null };
     }catch(e){
       ordered[i] = { canvas:null, error:(e&&e.message)||'falló' };
     }
-    // re-render incremental respetando el orden
+    // re-render incremental en orden (la galería se va llenando en vivo)
     results.length=0;
     ordered.forEach((o)=>{ if(o) addResultSilent(o.canvas, o.error); });
     renderGallery();
-  }, CONC);
+    // pequeña pausa antes de la siguiente (deja respirar a la API)
+    if(GAP && i<total-1) await new Promise(r=>setTimeout(r, GAP));
+  }
+
   const ok=results.filter(r=>!r.error).length, fail=results.length-ok;
   setStatus(`✔ Listo: ${ok} correctas`+(fail?`, ${fail} con error`:'')+'. Toca para elegir y descarga el .zip.');
   $('go').disabled=false; refreshButtons();
